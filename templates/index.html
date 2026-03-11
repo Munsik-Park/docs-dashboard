@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docs Dashboard</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg: #0d1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2128;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #d2a8ff;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Noto Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+}
+
+.layout { display: flex; height: 100vh; }
+
+/* Sidebar */
+.sidebar {
+    width: 320px; min-width: 320px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; height: 100vh;
+}
+.sidebar-header { padding: 20px; border-bottom: 1px solid var(--border); }
+.sidebar-header h1 { font-size: 16px; color: var(--accent); margin-bottom: 4px; }
+.sidebar-header p { font-size: 12px; color: var(--text-dim); }
+.sidebar-actions {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 8px;
+}
+
+.btn {
+    padding: 6px 14px; border: 1px solid var(--border); background: var(--card-bg);
+    color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px;
+    font-family: inherit; transition: all 0.15s;
+}
+.btn:hover { background: #2d333b; border-color: var(--text-dim); }
+.btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sidebar-nav { flex: 1; overflow-y: auto; padding: 8px 0; }
+
+.cat-group { margin-bottom: 4px; }
+.cat-header {
+    padding: 8px 20px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim);
+    cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px;
+}
+.cat-header:hover { color: var(--text); }
+.cat-header .arrow { font-size: 10px; transition: transform 0.2s; }
+.cat-header.collapsed .arrow { transform: rotate(-90deg); }
+.cat-items { padding: 0; }
+.cat-items.hidden { display: none; }
+
+.doc-item {
+    display: flex; align-items: center; padding: 7px 20px 7px 28px;
+    cursor: pointer; font-size: 13px; color: var(--text); gap: 8px;
+    transition: background 0.1s; border-left: 3px solid transparent;
+}
+.doc-item:hover { background: rgba(88, 166, 255, 0.06); }
+.doc-item.active {
+    background: rgba(88, 166, 255, 0.1);
+    border-left-color: var(--accent); color: #fff;
+}
+
+.sync-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.sync-synced { background: var(--green); }
+.sync-outdated { background: var(--yellow); }
+.sync-missing_html { background: var(--red); }
+.sync-html_only { background: var(--purple); }
+.sync-custom_html { background: var(--accent); }
+
+.doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-date { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+
+.sidebar-footer {
+    padding: 12px 20px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim);
+}
+.legend-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* Main */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.main-toolbar {
+    padding: 10px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+    background: var(--sidebar-bg); min-height: 48px;
+}
+.breadcrumb { font-size: 13px; color: var(--text-dim); }
+.breadcrumb .current { color: var(--text); font-weight: 600; }
+.toolbar-badges { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+.badge {
+    font-size: 11px; padding: 2px 10px; border-radius: 12px;
+    border: 1px solid var(--border); color: var(--text-dim);
+}
+.badge-md { border-color: #388bfd44; color: var(--accent); }
+.badge-html { border-color: #3fb95044; color: var(--green); }
+
+.viewer { flex: 1; background: #fff; overflow: hidden; }
+.viewer iframe { width: 100%; height: 100%; border: none; }
+
+.empty-state {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; height: 100%; color: var(--text-dim); background: var(--bg);
+}
+.empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+
+.toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--card-bg); border: 1px solid var(--border);
+    padding: 12px 20px; border-radius: 8px; font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 1000;
+    transition: opacity 0.3s, transform 0.3s;
+    opacity: 0; transform: translateY(10px);
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+
+.tab-bar { display: flex; gap: 0; }
+.tab {
+    padding: 6px 14px; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card-bg);
+    color: var(--text-dim); font-family: inherit;
+}
+.tab:first-child { border-radius: 6px 0 0 6px; }
+.tab:last-child { border-radius: 0 6px 6px 0; }
+.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.sidebar-nav::-webkit-scrollbar { width: 6px; }
+.sidebar-nav::-webkit-scrollbar-track { background: transparent; }
+.sidebar-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>Docs Dashboard</h1>
+            <p id="project-name"></p>
+        </div>
+        <div class="sidebar-actions">
+            <button class="btn btn-primary" id="btn-sync" onclick="syncAll()">Sync All</button>
+            <button class="btn" onclick="refreshList()">Refresh</button>
+        </div>
+        <nav class="sidebar-nav" id="sidebar-nav"></nav>
+        <div class="sidebar-footer">
+            <div class="legend-row"><div class="legend-dot sync-synced"></div> Synced</div>
+            <div class="legend-row"><div class="legend-dot sync-outdated"></div> HTML outdated</div>
+            <div class="legend-row"><div class="legend-dot sync-missing_html"></div> HTML missing</div>
+            <div class="legend-row"><div class="legend-dot sync-html_only"></div> HTML only</div>
+            <div class="legend-row"><div class="legend-dot sync-custom_html"></div> Custom (skip sync)</div>
+        </div>
+    </aside>
+
+    <main class="main">
+        <div class="main-toolbar" id="toolbar">
+            <span class="breadcrumb" id="breadcrumb">Select a document</span>
+            <div class="toolbar-badges" id="toolbar-badges"></div>
+        </div>
+        <div class="viewer" id="viewer">
+            <div class="empty-state">
+                <div class="icon">&#128196;</div>
+                <p>Click a document to view</p>
+            </div>
+        </div>
+    </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let docs = [];
+let currentDoc = null;
+let viewMode = 'html';
+
+async function loadConfig() {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    const el = document.getElementById('project-name');
+    el.textContent = cfg.project_name || '';
+    if (cfg.project_name) {
+        document.title = cfg.project_name + ' \u2014 Docs Dashboard';
+    }
+}
+
+async function fetchDocs() {
+    const res = await fetch('/api/docs');
+    docs = await res.json();
+    return docs;
+}
+
+function groupByCategory(docs) {
+    const groups = {};
+    for (const doc of docs) {
+        const cat = doc.category;
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(doc);
+    }
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+}
+
+function renderSidebar(docs) {
+    const nav = document.getElementById('sidebar-nav');
+    const groups = groupByCategory(docs);
+    nav.innerHTML = groups.map(([cat, items]) => `
+        <div class="cat-group">
+            <div class="cat-header" onclick="toggleGroup(this)">
+                <span class="arrow">&#9660;</span>
+                ${cat}
+                <span style="margin-left:auto;font-size:11px;color:var(--text-dim)">${items.length}</span>
+            </div>
+            <div class="cat-items">
+                ${items.map(doc => {
+                    const name = doc.stem.split('/').pop();
+                    const date = doc.html ? doc.html.mtime_str.slice(5) : (doc.md ? doc.md.mtime_str.slice(5) : '');
+                    return `
+                        <div class="doc-item" data-stem="${doc.stem}" onclick="selectDoc('${doc.stem}')">
+                            <div class="sync-dot sync-${doc.sync}"></div>
+                            <span class="doc-name" title="${doc.stem}">${name}</span>
+                            <span class="doc-date">${date}</span>
+                        </div>`;
+                }).join('')}
+            </div>
+        </div>
+    `).join('');
+}
+
+function toggleGroup(header) {
+    header.classList.toggle('collapsed');
+    header.nextElementSibling.classList.toggle('hidden');
+}
+
+function selectDoc(stem) {
+    currentDoc = docs.find(d => d.stem === stem);
+    if (!currentDoc) return;
+
+    document.querySelectorAll('.doc-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.stem === stem);
+    });
+
+    const breadcrumb = document.getElementById('breadcrumb');
+    const badges = document.getElementById('toolbar-badges');
+    const displayName = stem.split('/').pop().replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+    breadcrumb.innerHTML = `<span style="color:var(--text-dim)">${currentDoc.category} / </span><span class="current">${displayName}</span>`;
+
+    let bh = '';
+    if (currentDoc.md) bh += `<span class="badge badge-md">MD ${formatSize(currentDoc.md.size)}</span>`;
+    if (currentDoc.html) bh += `<span class="badge badge-html">HTML ${formatSize(currentDoc.html.size)}</span>`;
+
+    if (currentDoc.md && currentDoc.html) {
+        bh += `<div class="tab-bar">
+            <button class="tab ${viewMode === 'html' ? 'active' : ''}" onclick="switchView('html')">HTML</button>
+            <button class="tab ${viewMode === 'md' ? 'active' : ''}" onclick="switchView('md')">MD</button>
+        </div>`;
+    }
+
+    if (currentDoc.sync === 'outdated' || currentDoc.sync === 'missing_html') {
+        bh += `<button class="btn btn-primary" onclick="syncOne('${currentDoc.md.path}')" style="font-size:11px;padding:4px 10px">Sync</button>`;
+    }
+    badges.innerHTML = bh;
+    loadContent();
+}
+
+function switchView(mode) { viewMode = mode; if (currentDoc) selectDoc(currentDoc.stem); }
+
+function loadContent() {
+    const viewer = document.getElementById('viewer');
+    if (!currentDoc) return;
+    let path;
+    if (viewMode === 'html' && currentDoc.html) path = currentDoc.html.path;
+    else if (currentDoc.md) path = currentDoc.md.path;
+    else if (currentDoc.html) path = currentDoc.html.path;
+    else { viewer.innerHTML = '<div class="empty-state"><p>No viewable file</p></div>'; return; }
+    viewer.innerHTML = `<iframe src="/api/docs/view/${path}"></iframe>`;
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'KB';
+    return (bytes / 1048576).toFixed(1) + 'MB';
+}
+
+async function syncAll() {
+    const btn = document.getElementById('btn-sync');
+    btn.disabled = true; btn.textContent = 'Syncing...';
+    try {
+        const res = await fetch('/api/docs/sync', { method: 'POST' });
+        const data = await res.json();
+        showToast(`${data.total} file(s) synced` + (data.errors.length ? `, ${data.errors.length} error(s)` : ''));
+        await refreshList();
+    } catch (e) { showToast('Sync failed: ' + e.message); }
+    finally { btn.disabled = false; btn.textContent = 'Sync All'; }
+}
+
+async function syncOne(mdPath) {
+    try {
+        const res = await fetch(`/api/docs/sync/${mdPath}`, { method: 'POST' });
+        const data = await res.json();
+        showToast(`Synced: ${data.synced}`);
+        await refreshList();
+        if (currentDoc) selectDoc(currentDoc.stem);
+    } catch (e) { showToast('Sync failed: ' + e.message); }
+}
+
+async function refreshList() {
+    await fetchDocs();
+    renderSidebar(docs);
+    if (currentDoc) {
+        document.querySelectorAll('.doc-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.stem === currentDoc.stem);
+        });
+    }
+}
+
+function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// Init
+loadConfig();
+fetchDocs().then(d => renderSidebar(d));
+</script>
+</body>
+</html>

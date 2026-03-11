@@ -1,0 +1,12 @@
+services:
+  docs-dashboard:
+    build: .
+    ports:
+      - "${PORT:-15000}:8080"
+    volumes:
+      - ${DOCS_PATH:-.}:/app/docs
+    environment:
+      - DOCS_DIR=/app/docs
+      - PROJECT_NAME=${PROJECT_NAME:-}
+      - HTML_LANG=${HTML_LANG:-en}
+    restart: unless-stopped
