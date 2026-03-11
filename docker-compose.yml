@@ -5,8 +5,10 @@ services:
       - "${PORT:-15000}:8080"
     volumes:
       - ${DOCS_PATH:-.}:/app/docs
+      - ${SYNTHETIC_DATA_PATH:-./dataset/synthetic}:/app/dataset/synthetic
     environment:
       - DOCS_DIR=/app/docs
       - PROJECT_NAME=${PROJECT_NAME:-}
       - HTML_LANG=${HTML_LANG:-en}
+      - DATABASE_URL=${DATABASE_URL:-}
     restart: unless-stopped

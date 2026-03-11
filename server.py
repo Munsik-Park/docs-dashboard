@@ -1,18 +1,24 @@
 """Docs Dashboard — generic FastAPI server for browsing any project's documentation."""
 
 import json
+import logging
 import os
+from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime
+from contextlib import contextmanager
 
 import markdown
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+logger = logging.getLogger("docs-dashboard")
+
 DOCS_DIR = Path(os.environ.get("DOCS_DIR", "/app/docs"))
 PROJECT_NAME = os.environ.get("PROJECT_NAME", "")
 HTML_LANG = os.environ.get("HTML_LANG", "en")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 CUSTOM_CONFIG_FILE = ".docs-dashboard.json"
 
 app = FastAPI(title="Docs Dashboard")
@@ -20,18 +26,67 @@ app.mount("/static/docs", StaticFiles(directory=str(DOCS_DIR)), name="static_doc
 
 
 # ---------------------------------------------------------------------------
+# Database connection (optional — graceful degradation with pooling)
+# ---------------------------------------------------------------------------
+
+_db_available = False
+_db_pool = None
+
+try:
+    if DATABASE_URL:
+        import psycopg2
+        import psycopg2.extras
+        import psycopg2.pool
+        _db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, DATABASE_URL)
+        _db_available = True
+        logger.info("PostgreSQL support enabled (pool size 1-5)")
+except ImportError:
+    logger.warning("psycopg2 not installed — DB features disabled")
+except Exception as e:
+    logger.warning("DB connection failed — DB features disabled: %s", e)
+
+
+@contextmanager
+def get_db():
+    """Yield a pooled DB connection. Raises if DB not available."""
+    if not _db_available or not _db_pool:
+        raise HTTPException(503, "Database not configured")
+    conn = _db_pool.getconn()
+    try:
+        yield conn
+    finally:
+        _db_pool.putconn(conn)
+
+
+def db_query(sql: str, params: tuple = ()) -> list[dict]:
+    """Run a read query and return rows as dicts."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
 # Category classification
 # ---------------------------------------------------------------------------
 
+_custom_config_cache: dict | None = None
+_custom_config_loaded = False
+
+
 def _load_custom_config() -> dict | None:
-    """Load optional .docs-dashboard.json from the docs folder."""
+    """Load optional .docs-dashboard.json from the docs folder (cached)."""
+    global _custom_config_cache, _custom_config_loaded
+    if _custom_config_loaded:
+        return _custom_config_cache
     config_path = DOCS_DIR / CUSTOM_CONFIG_FILE
     if config_path.exists():
         try:
-            return json.loads(config_path.read_text(encoding="utf-8"))
+            _custom_config_cache = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
-            return None
-    return None
+            _custom_config_cache = None
+    _custom_config_loaded = True
+    return _custom_config_cache
 
 
 def classify_doc(rel_path: str) -> str:
@@ -93,8 +148,9 @@ def scan_docs() -> list[dict]:
 
         rel = path.relative_to(DOCS_DIR)
         stem = str(rel.with_suffix(""))
-        mtime = path.stat().st_mtime
-        size = path.stat().st_size
+        st = path.stat()
+        mtime = st.st_mtime
+        size = st.st_size
 
         if stem not in files:
             files[stem] = {
@@ -151,6 +207,11 @@ def scan_docs() -> list[dict]:
     return result
 
 
+def stem_to_title(stem: str) -> str:
+    """Convert a file stem like 'my-doc/sub_page' to a display title."""
+    return stem.replace("-", " ").replace("_", " ").replace("/", " \u2014 ").title()
+
+
 def render_md_to_html(md_path: Path) -> str:
     """Convert markdown file to HTML body string."""
     content = md_path.read_text(encoding="utf-8")
@@ -204,7 +265,7 @@ def sync_all():
             html_path = md_path.with_suffix(".html")
             try:
                 body = render_md_to_html(md_path)
-                title = doc["stem"].replace("-", " ").replace("/", " — ").title()
+                title = stem_to_title(doc["stem"])
                 html_content = generate_styled_html(title, body)
                 html_path.write_text(html_content, encoding="utf-8")
                 synced.append(str(html_path.relative_to(DOCS_DIR)))
@@ -222,7 +283,7 @@ def sync_one(path: str):
 
     html_path = md_path.with_suffix(".html")
     body = render_md_to_html(md_path)
-    title = md_path.stem.replace("-", " ").replace("_", " ").title()
+    title = stem_to_title(md_path.stem)
     html_content = generate_styled_html(title, body)
     html_path.write_text(html_content, encoding="utf-8")
 
@@ -231,12 +292,13 @@ def sync_one(path: str):
 
 def generate_styled_html(title: str, body: str) -> str:
     """Wrap rendered markdown in a styled HTML document."""
+    safe_title = html_escape(title)
     return f"""<!DOCTYPE html>
 <html lang="{HTML_LANG}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
+<title>{safe_title}</title>
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{
@@ -264,11 +326,139 @@ blockquote {{ border-left: 4px solid #3498db; padding: 10px 16px; margin: 12px 0
 </head>
 <body>
 <div class="container">
-<h1>{title}</h1>
+<h1>{safe_title}</h1>
 {body}
 </div>
 </body>
 </html>"""
+
+
+# ---------------------------------------------------------------------------
+# Config: expose DB availability to frontend
+# ---------------------------------------------------------------------------
+
+@app.get("/api/features")
+def get_features():
+    return {"db_available": _db_available and bool(DATABASE_URL)}
+
+
+# ---------------------------------------------------------------------------
+# Domains API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/domains")
+def list_domains():
+    rows = db_query("""
+        SELECT domain, category_count, product_count, avg_attributes,
+               created_at, updated_at
+        FROM ontology.domain_registry
+        ORDER BY domain
+    """)
+    return rows
+
+
+@app.get("/api/domains/{domain}/stats")
+def domain_stats(domain: str):
+    rows = db_query("""
+        SELECT category, product_count, avg_confidence
+        FROM ontology.domain_stats
+        WHERE domain = %s
+        ORDER BY product_count DESC
+    """, (domain,))
+    return {"domain": domain, "categories": rows}
+
+
+# ---------------------------------------------------------------------------
+# Taxonomy API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/taxonomy/tree")
+def taxonomy_tree():
+    rows = db_query("""
+        SELECT id, parent_id, name, node_type, domain, depth, product_count
+        FROM ontology.discovered_taxonomy
+        ORDER BY depth, name
+    """)
+    return rows
+
+
+@app.get("/api/taxonomy/pending")
+def taxonomy_pending():
+    rows = db_query("""
+        SELECT id, parent_id, name, node_type, domain, depth, product_count,
+               confidence, discovered_at
+        FROM ontology.discovered_taxonomy
+        WHERE node_type = 'discovered' AND promoted = false
+        ORDER BY confidence DESC
+    """)
+    return rows
+
+
+@app.post("/api/taxonomy/promote/{node_id}")
+def taxonomy_promote(node_id: int):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE ontology.discovered_taxonomy
+                SET node_type = 'standard', promoted = true, promoted_at = NOW()
+                WHERE id = %s AND node_type = 'discovered'
+                RETURNING id, name
+            """, (node_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, f"Node {node_id} not found or already promoted")
+            conn.commit()
+            return {"promoted": {"id": row[0], "name": row[1]}}
+
+
+# ---------------------------------------------------------------------------
+# Quality API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/quality/overview")
+def quality_overview():
+    rows = db_query("""
+        SELECT
+            COUNT(*) as total_products,
+            AVG(confidence) as avg_confidence,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY confidence) as median_confidence,
+            AVG(attribute_coverage) as avg_coverage,
+            COUNT(CASE WHEN confidence >= 0.8 THEN 1 END) as high_confidence_count,
+            COUNT(CASE WHEN confidence < 0.5 THEN 1 END) as low_confidence_count,
+            COUNT(CASE WHEN confidence < 0.2 THEN 1 END) as bucket_0_02,
+            COUNT(CASE WHEN confidence >= 0.2 AND confidence < 0.4 THEN 1 END) as bucket_02_04,
+            COUNT(CASE WHEN confidence >= 0.4 AND confidence < 0.6 THEN 1 END) as bucket_04_06,
+            COUNT(CASE WHEN confidence >= 0.6 AND confidence < 0.8 THEN 1 END) as bucket_06_08,
+            COUNT(CASE WHEN confidence >= 0.8 THEN 1 END) as bucket_08_10
+        FROM ontology.product_quality
+    """)
+    return rows[0] if rows else {}
+
+
+@app.get("/api/quality/domain/{domain}")
+def quality_by_domain(domain: str):
+    rows = db_query("""
+        SELECT category, COUNT(*) as count,
+               AVG(confidence) as avg_confidence,
+               AVG(attribute_coverage) as avg_coverage
+        FROM ontology.product_quality
+        WHERE domain = %s
+        GROUP BY category
+        ORDER BY count DESC
+    """, (domain,))
+    return {"domain": domain, "categories": rows}
+
+
+@app.get("/api/quality/coverage-by-domain")
+def quality_coverage_by_domain():
+    rows = db_query("""
+        SELECT domain, AVG(attribute_coverage) as avg_coverage
+        FROM ontology.product_quality
+        GROUP BY domain
+        ORDER BY avg_coverage DESC
+        LIMIT 10
+    """)
+    return rows
 
 
 # ---------------------------------------------------------------------------
